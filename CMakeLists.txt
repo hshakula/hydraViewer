@@ -2,24 +2,14 @@ cmake_minimum_required(VERSION 3.1.1)
 
 project(hydraViewer)
 
-set(CMAKE_MODULE_PATH ${CMAKE_CURRENT_SOURCE_DIR}/cmake/usd_cmake/defaults
-                      ${CMAKE_CURRENT_SOURCE_DIR}/cmake/usd_cmake/modules
-                      ${CMAKE_CURRENT_SOURCE_DIR}/cmake/usd_cmake/macros
-                      ${CMAKE_CURRENT_SOURCE_DIR}/cmake/modules)
+find_package(pxr REQUIRED)
 
-include(Options)
-include(ProjectDefaults)
+if(MSVC)
+    STRING(REPLACE "/O2" "/Od" CMAKE_CXX_FLAGS_RELWITHDEBINFO ${CMAKE_CXX_FLAGS_RELWITHDEBINFO})
+    SET(CMAKE_CXX_FLAGS_RELWITHDEBINFO ${CMAKE_CXX_FLAGS_RELWITHDEBINFO} CACHE STRING "compile flags" FORCE)
 
-include(CXXDefaults)
-add_definitions(${_PXR_CXX_DEFINITIONS})
-set(CMAKE_CXX_FLAGS "${_PXR_CXX_FLAGS} ${CMAKE_CXX_FLAGS}")
+    set(CMAKE_VS_INCLUDE_INSTALL_TO_DEFAULT_BUILD 1)
+endif()
 
-include(Public)
-include(Packages)
-
-set(CMAKE_CXX_STANDARD 11)
-
-find_package(USD REQUIRED)
-link_directories(${USD_LIBRARY_DIR})
-
+include_directories(${CMAKE_CURRENT_SOURCE_DIR})
 add_subdirectory(pxr/rprImaging/rprEngine)

@@ -1,6 +1,8 @@
 #include "pxr/rprImaging/rprEngine/engine.h"
 
 #include "pxr/imaging/hd/rendererPluginRegistry.h"
+#include "pxr/imaging/hgi/hgi.h"
+#include "pxr/imaging/hgi/tokens.h"
 #include "pxr/base/tf/getenv.h"
 
 PXR_NAMESPACE_OPEN_SCOPE
@@ -246,7 +248,9 @@ bool HdRprEngine::SetRendererPlugin(TfToken const &id) {
     m_rendererPlugin = plugin;
     m_rendererId = actualId;
 
-    m_renderIndex = HdRenderIndex::New(renderDelegate);
+    auto hgi = Hgi::GetPlatformDefaultHgi();
+    HdDriver hgiDriver{HgiTokens->renderDriver, VtValue(hgi)};
+    m_renderIndex = HdRenderIndex::New(renderDelegate, {&hgiDriver});
 
     // Create the new delegate & task controller.
     m_delegate = new UsdImagingDelegate(m_renderIndex, m_delegateID);

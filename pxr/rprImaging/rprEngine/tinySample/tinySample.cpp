@@ -3,16 +3,22 @@
 #include "pxr/imaging/hd/renderPass.h"
 #include "pxr/imaging/hd/renderBuffer.h"
 #include "pxr/imaging/hd/rprimCollection.h"
+#include "pxr/imaging/hd/rendererPlugin.h"
+#include "pxr/imaging/hd/rendererPluginRegistry.h"
 
-#include "pxr/imaging/hdRpr/renderDelegate.h"
 
 #include "pxr/usdImaging/usdImaging/delegate.h"
 
 #include "pxr/usd/usd/stage.h"
+#include "pxr/usd/usdGeom/metrics.h"
 
 #include "pxr/imaging/glf/image.h"
 
+#include "pxr/base/work/loops.h"
+
 #include "pxr/base/gf/rotation.h"
+#include "pxr/base/gf/camera.h"
+#include "pxr/base/gf/frustum.h"
 
 #include "renderTask.h"
 
@@ -112,6 +118,81 @@ private:
     ValueCacheMap m_valueCacheMap;
 };
 
+HdRenderDelegate* GetRenderDelegate(TfToken const& id) {
+    HdRendererPlugin* plugin = nullptr;
+    TfToken actualId = id;
+
+    // Special case: TfToken() selects the first plugin in the list.
+    if (actualId.IsEmpty()) {
+        actualId = HdRendererPluginRegistry::GetInstance().GetDefaultPluginId();
+    }
+    plugin = HdRendererPluginRegistry::GetInstance().GetRendererPlugin(actualId);
+
+    if (plugin == nullptr) {
+        TF_CODING_ERROR("Couldn't find plugin for id %s", actualId.GetText());
+        return nullptr;
+    } else if (!plugin->IsSupported()) {
+        // Don't do anything if the plugin isn't supported on the running
+        // system, just return that we're not able to set it.
+        HdRendererPluginRegistry::GetInstance().ReleasePlugin(plugin);
+        return nullptr;
+    }
+
+    HdRenderDelegate* renderDelegate = plugin->CreateRenderDelegate();
+    if (!renderDelegate) {
+        HdRendererPluginRegistry::GetInstance().ReleasePlugin(plugin);
+        return nullptr;
+    }
+
+    return renderDelegate;
+}
+
+static GfCamera
+_ComputeCameraToFrameStage(const UsdStageRefPtr& stage, UsdTimeCode timeCode,
+    const TfTokenVector& includedPurposes) {
+    // Start with a default (50mm) perspective GfCamera.
+    GfCamera gfCamera;
+    UsdGeomBBoxCache bboxCache(timeCode, includedPurposes,
+        /* useExtentsHint = */ true);
+    GfBBox3d bbox = bboxCache.ComputeWorldBound(stage->GetPseudoRoot());
+    GfVec3d center = bbox.ComputeCentroid();
+    GfRange3d range = bbox.ComputeAlignedRange();
+    GfVec3d dim = range.GetSize();
+    TfToken upAxis = UsdGeomGetStageUpAxis(stage);
+    // Find corner of bbox in the focal plane.
+    GfVec2d plane_corner;
+    if (upAxis == UsdGeomTokens->y) {
+        plane_corner = GfVec2d(dim[0], dim[1]) / 2;
+    } else {
+        plane_corner = GfVec2d(dim[0], dim[2]) / 2;
+    }
+    float plane_radius = sqrt(GfDot(plane_corner, plane_corner));
+    // Compute distance to focal plane.
+    float half_fov = gfCamera.GetFieldOfView(GfCamera::FOVHorizontal) / 2.0;
+    float distance = plane_radius / tan(GfDegreesToRadians(half_fov));
+    // Back up to frame the front face of the bbox.
+    if (upAxis == UsdGeomTokens->y) {
+        distance += dim[2] / 2;
+    } else {
+        distance += dim[1] / 2;
+    }
+    // Compute local-to-world transform for camera filmback.
+    GfMatrix4d xf;
+    //if (upAxis == UsdGeomTokens->y) {
+        xf.SetTranslate(center + GfVec3d(0, 0, distance));
+    /*} else {
+        xf.SetRotate(GfRotation(GfVec3d(1, 0, 0), 90));
+        xf.SetTranslateOnly(center + GfVec3d(0, -distance, 0));
+    }*/
+    gfCamera.SetTransform(xf);
+    return gfCamera;
+}
+
+// Prman linear to display
+static float DspyLinearTosRGB(float u) {
+    return u < 0.0031308f ? 12.92f * u : 1.055f * powf(u, 0.4167f) - 0.055f;
+}
+
 PXR_NAMESPACE_CLOSE_SCOPE
 
 int main(int ac, char** av) {
@@ -122,8 +203,6 @@ int main(int ac, char** av) {
 
     PXR_NAMESPACE_USING_DIRECTIVE
 
-    auto a = sizeof(UsdImagingDelegate);
-
     auto stage = UsdStage::Open(av[1]);
     if (!stage) {
         printf("Failed to open stage at \"%s\"\n", av[1]);
@@ -131,14 +210,10 @@ int main(int ac, char** av) {
     auto rootPrim = stage->GetPseudoRoot();
 
     HdEngine engine;
-    HdRenderDelegate* renderDelegate = new HdRprDelegate();
-    auto renderIndex = HdRenderIndex::New(renderDelegate);
+    auto renderDelegate = GetRenderDelegate(TfToken("HdRprPlugin"));
+    auto renderIndex = HdRenderIndex::New(renderDelegate, {});
     auto sceneDelegateId = SdfPath::AbsoluteRootPath().AppendElementString("usdImagingDelegate");
     auto sceneDelegate = new UsdImagingDelegate(renderIndex, sceneDelegateId);
-    auto sceneTransform = GfMatrix4d(1.0);
-    sceneTransform *= GfMatrix4d(1.0).SetScale(GfVec3d(0.08));
-    //sceneTransform *= GfMatrix4d(1.0).SetRotateOnly(GfRotation(GfVec3d(0.0, 1.0, 0.0), 180.0));
-    sceneDelegate->SetRootTransform(sceneTransform);
     sceneDelegate->Populate(rootPrim);
 
     //renderDelegate->SetRenderSetting(TfToken("maxSamples"), VtValue(32));
@@ -146,13 +221,19 @@ int main(int ac, char** av) {
     auto taskDataDelegate = new HdRprTaskDataDelegate(renderIndex, SdfPath::AbsoluteRootPath().AppendElementString("taskDataDelegate"));
     auto taskDataDelegateId = taskDataDelegate->GetDelegateID();
 
-    auto viewMatrix = GfMatrix4d(GfMatrix3d(1.0), GfVec3d(0.0, -0.5, -1.0));
+    auto camera = _ComputeCameraToFrameStage(stage, UsdTimeCode::Default(), {UsdGeomTokens->default_, UsdGeomTokens->proxy});
+    auto frustum = camera.GetFrustum();
+
+    //auto viewMatrix = GfMatrix4d(GfMatrix3d(1.0), GfVec3d(0.0, -0.5, -0.25));
+    //auto projMatrix = GfMatrix4d(1.0);
+    auto viewMatrix = frustum.ComputeViewMatrix();
+    auto projMatrix = frustum.ComputeProjectionMatrix();
 
     auto freeCameraId = taskDataDelegateId.AppendElementString("freeCamera");
     renderIndex->InsertSprim(HdPrimTypeTokens->camera, taskDataDelegate, freeCameraId);
     taskDataDelegate->SetParameter(freeCameraId, HdCameraTokens->windowPolicy, VtValue(CameraUtilFit));
     taskDataDelegate->SetParameter(freeCameraId, HdCameraTokens->worldToViewMatrix, VtValue(viewMatrix));
-    taskDataDelegate->SetParameter(freeCameraId, HdCameraTokens->projectionMatrix, VtValue(GfMatrix4d(1.0)));
+    taskDataDelegate->SetParameter(freeCameraId, HdCameraTokens->projectionMatrix, VtValue(projMatrix));
     taskDataDelegate->SetParameter(freeCameraId, HdCameraTokens->clipPlanes, VtValue(std::vector<GfVec4d>()));
 
     GfVec4d viewport(0, 0, 1024, 1024);
@@ -205,7 +286,7 @@ int main(int ac, char** av) {
     renderIndex->GetChangeTracker().MarkTaskDirty(renderTaskId, HdChangeTracker::DirtyRenderTags);
 
     {
-        auto renderTask = boost::static_pointer_cast<HdRprRenderTask>(renderIndex->GetTask(renderTaskId));
+        auto renderTask = std::static_pointer_cast<HdRprRenderTask>(renderIndex->GetTask(renderTaskId));
         HdTaskSharedPtrVector tasks = { renderTask };
 
         engine.Execute(renderIndex, &tasks);
@@ -224,6 +305,15 @@ int main(int ac, char** av) {
         storage.type = GL_FLOAT;
         storage.flipped = true;
         storage.data = aovBindings[0].renderBuffer->Map();
+
+        WorkParallelForN(size_t(storage.width) * storage.height, [&storage](size_t begin, size_t end) {
+            for (size_t i = begin; i < end; ++i) {
+                for (int j = 0; j < 3; ++j) {
+                    float* value = (float*)storage.data + 4 * i + j;
+                    *value = DspyLinearTosRGB(*value);
+                }
+            }
+        });
 
         GlfImageSharedPtr image = GlfImage::OpenForWriting("color.png");
         bool writeSuccess = image && image->Write(storage);

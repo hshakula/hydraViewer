@@ -1,8 +1,6 @@
 #ifndef HDRPR_RENDER_TASK_H
 #define HDRPR_RENDER_TASK_H
 
-#include "pxr/rprImaging/rprEngine/api.h"
-
 #include "pxr/imaging/hd/task.h"
 #include "pxr/imaging/hd/renderPass.h"
 #include "pxr/imaging/hd/renderPassState.h"
@@ -11,35 +9,29 @@ PXR_NAMESPACE_OPEN_SCOPE
 
 class HdRprRenderTask : public HdTask {
 public:
-    HDRPR_API
     HdRprRenderTask(HdSceneDelegate* delegate, SdfPath const& id);
 
     HdRprRenderTask() = delete;
     HdRprRenderTask(HdRprRenderTask const&) = delete;
     HdRprRenderTask &operator=(HdRprRenderTask const&) = delete;
 
-    HDRPR_API
     ~HdRprRenderTask() override;
 
     bool IsConverged() const;
 
     /// Sync the render pass resources
-    HDRPR_API
     void Sync(HdSceneDelegate* delegate,
               HdTaskContext* ctx,
               HdDirtyBits* dirtyBits) override;
 
     /// Prepare the tasks resources
-    HDRPR_API
     void Prepare(HdTaskContext* ctx,
                  HdRenderIndex* renderIndex) override;
 
     /// Execute render pass task
-    HDRPR_API
     void Execute(HdTaskContext* ctx) override;
 
     /// Collect Render Tags used by the task.
-    HDRPR_API
     TfTokenVector const& GetRenderTags() const override;
 
 private:
@@ -61,11 +53,8 @@ struct HdRprRenderTaskParams {
 };
 
 // VtValue requirements
-HDRPR_API
 std::ostream& operator<<(std::ostream& out, const HdRprRenderTaskParams& pv);
-HDRPR_API
 bool operator==(const HdRprRenderTaskParams& lhs, const HdRprRenderTaskParams& rhs);
-HDRPR_API
 bool operator!=(const HdRprRenderTaskParams& lhs, const HdRprRenderTaskParams& rhs);
 
 PXR_NAMESPACE_CLOSE_SCOPE

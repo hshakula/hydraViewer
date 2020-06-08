@@ -1,49 +1,37 @@
-set(PXR_PREFIX rprEngine)
-set(PXR_PACKAGE rprEngine)
+add_library(rprEngine SHARED
+    api.h
+    engine.h
+    engine.cpp
+    renderParams.h)
+target_link_libraries(rprEngine PUBLIC
+    hd
+    hf
+    hdx
+    gf
+    tf
+    trace
+    sdf
+    usd
+    usdImaging)
 
-if(${USD_LIBRARY_MONOLITHIC})
-    set(USD_LIBRARIES usd_ms)
-else()
-    set(USD_LIBRARIES
-        hd
-        hf
-        hdx
-        gf
-        tf
-        trace
-        sdf
-        usd
-        usdImaging
-        )
+function(disable_warning target flag)
+    if(MSVC)
+        target_compile_options(${target} PUBLIC "/wd${flag}")
+    else()
+        target_compile_options(${target} PUBLIC "-Wno-${flag}")
+    endif()
+endfunction()
+
+if(MSVC)
+    # truncation from 'double' to 'float' due to matrix and vector classes in `Gf`
+    target_compile_options(rprEngine PUBLIC "/wd4244")
+    target_compile_options(rprEngine PUBLIC "/wd4305")
+
+    target_compile_definitions(rprEngine PUBLIC "-DNOMINMAX")
 endif()
 
-pxr_library(rprEngine
-    LIBRARIES
-        ${USD_LIBRARIES}
-        ${TBB_tbb_LIBRARY}
-        ${Boost_LIBRARIES}
-        ${PYTHON_LIBRARY}
-
-    INCLUDE_DIRS
-        ${USD_INCLUDE_DIR}
-        ${TBB_INCLUDE_DIRS}
-        ${Boost_INCLUDE_DIRS}
-
-    PUBLIC_CLASSES
-        engine
-
-    PUBLIC_HEADERS
-        api.h
-        version.h
-        renderParams.h
-)
-
-pxr_build_test(testHdRprEngine
-    LIBRARIES
-        rprEngine
-        usd
-    CPPFILES
-        test/testHdRprEngine.cpp
-)
+target_compile_definitions(rprEngine PRIVATE "-DHDRPR_EXPORTS")
 
 add_subdirectory(tinySample)
+
+install(TARGETS rprEngine)
